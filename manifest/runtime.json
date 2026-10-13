@@ -1,0 +1,24 @@
+{
+  "id": "winecx-26.2",
+  "gptkCapable": true,
+  "components": {
+    "wine": {
+      "version": "26.2",
+      "url": "local://winecx-26.2-osx64.tar.xz",
+      "sha256": "local",
+      "archive": "winecx-26.2-osx64.tar.xz"
+    },
+    "dxmt": {
+      "version": "0.80",
+      "url": "https://github.com/3Shain/dxmt/releases/download/v0.80/dxmt-v0.80-builtin.tar.gz",
+      "sha256": "8f260e36b5739e68f3bad613381441385c4dc7b85b78ba8de653d5a6a264529d",
+      "archive": "dxmt-v0.80-builtin.tar.gz"
+    },
+    "dxvk": {
+      "version": "1.10.3-20230507-repack",
+      "url": "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack-builtin.tar.gz",
+      "sha256": "810b1e5caf8ce975b784fae866a130ad23fa0ea233b0e5609cbc4a45f3ef6f00",
+      "archive": "dxvk-macOS-async-v1.10.3-20230507-repack-builtin.tar.gz"
+    }
+  }
+}
