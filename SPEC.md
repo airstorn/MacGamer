@@ -29,7 +29,7 @@ MacGamer — личный лаунчер Windows-игр на Apple Silicon. Он
 
 ## 3. Пользовательские сценарии
 
-1. **Первый запуск:** `doctor` → установить winecx → создать steam-bottle → `steam use` → войти в Steam → установить игру → `steam sync` / GUI-библиотека → `run --app <id>`.
+1. **Первый запуск:** мастер в `MacGamer.app` (Rosetta → встроенный winecx → SteamSetup.exe) → войти в Steam → установить игру → библиотека / `run --app <id>`. CrossOver не требуется. CLI: `runtime install` без `--archive`.
 2. **Смена графики:** `backend set` на бутылке; применяется к следующим запускам (Steam UI может идти отдельно от игрового бэкенда).
 3. **Импорт GPTK:** пользователь указывает DMG/lib → `gptk import` → доступен `d3dmetal` при `gptkCapable`.
 4. **Диагностика:** dry-run команд, `log summarize`, файлы в `logs/`.
@@ -39,8 +39,8 @@ MacGamer — личный лаунчер Windows-игр на Apple Silicon. Он
 ```
 macgamer (CLI) ──┐
 MacGamerApp (UI)─┼── LauncherCore
-                 │     ├── RuntimeStore / Doctor
-                 │     ├── BottleStore / ProcessLauncher
+                 │     ├── RuntimeStore / Doctor / SetupGuide
+                 │     ├── BottleStore / ProcessLauncher / RosettaInstaller
                  │     ├── LaunchPlanner / BackendOverlay
                  │     ├── SteamLibrary / SteamVDF / SteamWebHelperFix
                  │     ├── GPTKImporter / Dependencies / Diagnostics
@@ -76,10 +76,11 @@ MacGamerApp (UI)─┼── LauncherCore
 ### Текущий runtime (контракт)
 
 - `id`: `winecx-26.2`
-- Источник: LGPL-пакет из CrossOver (`tools/package-winecx-from-crossover.sh`), не FOSS-сборка по умолчанию
+- Источник для пользователя: встроенный LGPL-архив `Sources/LauncherCore/BundledRuntime/winecx-26.2-osx64.tar.xz` (Git LFS)
+- Обновление бандла мантейнером: `tools/package-winecx-from-crossover.sh` или `tools/build-winecx.sh`
 - `gptkCapable`: `true` (требуется экспорт `macdrv_functions` в `winemac.so`)
-- Компоненты: wine (локальный archive), DXMT `0.80` builtin, DXVK-macOS async repack
-- Установка: `macgamer runtime install [--archive <winecx.tar.xz>] [--force]`
+- Компоненты: wine (бандл), DXMT `0.80` builtin, DXVK-macOS async repack
+- Установка: `macgamer runtime install [--archive <winecx.tar.xz>] [--force]` — без флагов берёт бандл
 - После установки патчится `winecoreaudio.so` (см. §10 / §16)
 
 ### Env при запуске (LaunchPlanner)
@@ -167,12 +168,13 @@ macgamer log summarize <path>
 
 | Скрипт | Назначение |
 | --- | --- |
-| `tools/package-winecx-from-crossover.sh` | упаковка LGPL Wine из установленного CrossOver → `winecx-*-osx64.tar.xz` (предпочтительный путь для рабочего Steam) |
+| `tools/package-winecx-from-crossover.sh` | мантейнер: упаковка LGPL Wine из CrossOver → обновление бандла `BundledRuntime` |
 | `tools/build-winecx.sh` | FOSS CrossOver sources → tar.xz с `macdrv_functions` (эксперимент; см. §15) |
 | `tools/patch-winecoreaudio.sh` | пересборка/установка патченного `winecoreaudio.so` в runtime |
 | `tools/patches/winecoreaudio-period-frames.patch` | MR11681 + увеличенный HAL-буфер (≥1024 frames, ring ×6) |
 | `tools/steamwebhelper-shim/` | CEF-shim для чёрного экрана Steam |
 | `tools/package-app.sh` | сборка `MacGamer.app` и установка в `~/Applications` |
+| `make app` / `make run` | обёртка: собрать `.app` / собрать и открыть |
 | `tools/make-app-icon.swift` | значок приложения для `.app` |
 
 ## 11. Требования к окружению
@@ -180,13 +182,15 @@ macgamer log summarize <path>
 - Apple Silicon, Rosetta 2
 - macOS 14+
 - Xcode / Swift 6 toolchain
-- Для FOSS-сборки Wine: Intel Homebrew (`/usr/local`), зависимости из шапки `build-winecx.sh`
+- Git LFS для `Sources/LauncherCore/BundledRuntime/winecx-26.2-osx64.tar.xz`
+- CrossOver у пользователя не требуется
+- Для FOSS-сборки Wine (мантейнер): Intel Homebrew (`/usr/local`), зависимости из шапки `build-winecx.sh`
 - Для патча звука: дерево сборки `~/winecx-build-<ver>/` (после хотя бы одной configure/make wine) либо повторный `build-winecx.sh`
 
 ## 12. Тестирование
 
-- `swift test` — unit/fixture тесты `LauncherCoreTests` (манифест, VDF, planner env, GPTK import fixture, dry-run deps).
-- Ручной smoke: `doctor`, `runtime install`, `steam open` (логин Success), `run --app` на известной DX11-игре (например Megabonk / appid `3405340`), проверка щелчков звука.
+- `swift test` — unit/fixture тесты `LauncherCoreTests` (манифест, бандл Wine, SetupGuide, VDF, planner env, GPTK import fixture, dry-run deps).
+- Ручной smoke: мастер GUI, `doctor`, `runtime install`, `steam open` (логин Success), `run --app` на известной DX11-игре (например Megabonk / appid `3405340`), проверка щелчков звука.
 
 ## 13. Лицензии и границы распространения
 
@@ -204,18 +208,18 @@ macgamer log summarize <path>
 
 1. `swift build` и `swift test` проходят.
 2. `doctor` сообщает chip, Rosetta, установленный runtime, `gptkCapable` / `gptkImported`.
-3. Runtime winecx ставится из `--archive` и содержит `macdrv_functions`.
+3. Runtime winecx ставится из встроенного архива (`runtime install` без `--archive`) и содержит `macdrv_functions`.
 4. Steam открывается из указанного пути; CEF не остаётся чёрным экраном из‑за GPU (shim); логин доходит до `SetLoginState: Success`.
 5. Установленная игра появляется после `steam sync` / в GUI.
 6. `run --app` запускает игру с выбранным бэкендом; для `dxmt` на winecx Direct3D инициализируется на Apple GPU.
-7. Запуск не требует наличия `CrossOver.app` в `/Applications` после установки winecx в Application Support.
+7. Установка и запуск не требуют `CrossOver.app`.
 8. В runtime установлен патченный `winecoreaudio.so` (или задокументирован откат к `.bak-pre-period-patch`).
 
 ## 15. Известные ограничения
 
-- **FOSS winecx (например 26.3 из `build-winecx.sh`)** на практике ломает Steam: `Crypto API failed certificate check`, застревание логина / CM. Рабочий путь для Steam — winecx из CX-пакета (`package-winecx-from-crossover.sh`), сейчас `winecx-26.2`.
-- Сборка winecx из исходников долгая и хрупкая (Intel Homebrew Tier 3, Rosetta).
-- Bootstrap-упаковка из CrossOver упрощает получение LGPL-бинарей; версия wine ≤ версии установленного CrossOver.
+- **FOSS winecx (например 26.3 из `build-winecx.sh`)** на практике ломает Steam: `Crypto API failed certificate check`, застревание логина / CM. Пользовательский бандл — `winecx-26.2`.
+- Сборка winecx из исходников долгая и хрупкая (Intel Homebrew Tier 3, Rosetta) и нужна только мантейнеру.
+- Обновление бандла из CrossOver — опция мантейнера; версия wine ≤ версии установленного CrossOver.
 - Смена Wine/runtime может сбросить сессию Steam (повторный логин).
 - Не все игры совместимы с DXMT/DXVK/D3DMetal на Apple Silicon.
 - Редкие щелчки звука возможны под нагрузкой Rosetta даже с патчем period/buffer.

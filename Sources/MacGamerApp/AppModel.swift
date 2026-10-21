@@ -1,6 +1,8 @@
+import AppKit
 import Foundation
 import LauncherCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -12,6 +14,10 @@ final class AppModel: ObservableObject {
     @Published var steamPathInput: String = ""
     @Published var errorText: String = ""
     @Published var selectedGameId: String?
+    @Published var setupStatus = SetupStatus(step: .runtime, title: "", detail: "")
+    @Published var serviceStatuses: [ServiceStatus] = []
+    @Published var isBusy = false
+    @Published var progressText = ""
 
     let paths = AppPaths()
     private let libraryStore: LibraryStore
@@ -29,9 +35,13 @@ final class AppModel: ObservableObject {
     }
 
     func refresh() {
-        doctorText = Doctor(paths: paths).formattedReport()
+        let doctor = Doctor(paths: paths)
+        doctorText = doctor.formattedReport()
         bottles = (try? bottleStore.list()) ?? []
         games = (try? libraryStore.load().games) ?? []
+        let report = doctor.report()
+        setupStatus = SetupGuide.status(doctor: report, bottles: bottles)
+        serviceStatuses = SetupGuide.services(doctor: report, bottles: bottles)
         if let steam = bottles.first(where: { $0.role == .steam }), let path = steam.steamExePath {
             steamPathInput = path
         }
@@ -40,8 +50,9 @@ final class AppModel: ObservableObject {
     func useSteamPath() {
         do {
             let bottle = try steamLibrary.use(path: steamPathInput)
-            status = "Steam путь сохранён в бутылке \(bottle.id)"
+            status = "Steam сохранён"
             errorText = ""
+            _ = bottle
             refresh()
             startWatching()
         } catch {
@@ -49,11 +60,72 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func chooseSteamFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Выберите SteamSetup.exe или steam.exe"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.treatsFilePackagesAsDirectories = true
+        if let exe = UTType(filenameExtension: "exe") {
+            panel.allowedContentTypes = [exe]
+        }
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+        steamPathInput = url.path
+        useSteamPath()
+    }
+
+    func installRosetta() {
+        guard !isBusy else { return }
+        isBusy = true
+        progressText = "Установка Rosetta…"
+        errorText = ""
+        Task {
+            do {
+                try await Task.detached {
+                    try RosettaInstaller.install()
+                }.value
+                isBusy = false
+                progressText = ""
+                refresh()
+            } catch {
+                isBusy = false
+                progressText = ""
+                errorText = Diagnostics.explain(error)
+            }
+        }
+    }
+
+    func installRuntime() {
+        guard !isBusy else { return }
+        isBusy = true
+        progressText = "Установка среды запуска…"
+        errorText = ""
+        let paths = self.paths
+        Task {
+            do {
+                try await Self.runInstall(paths: paths) { text in
+                    await self.updateProgress(text)
+                }
+                isBusy = false
+                progressText = ""
+                status = "Среда запуска установлена"
+                refresh()
+            } catch {
+                isBusy = false
+                progressText = ""
+                errorText = Diagnostics.explain(error)
+            }
+        }
+    }
+
     func openSteam() {
         do {
             let command = try planner.planSteamOpen()
             _ = try ProcessLauncher().run(command, wait: false)
-            status = "Steam запущен, лог: \(command.logPath)"
+            status = "Steam запущен"
             errorText = ""
             selectedLogSummary = (try? Diagnostics.summarizeLog(at: command.logPath)) ?? ""
         } catch {
@@ -64,7 +136,7 @@ final class AppModel: ObservableObject {
     func syncSteam() {
         do {
             games = try steamLibrary.sync()
-            status = "Библиотека синхронизирована: \(games.count)"
+            status = "Библиотека обновлена: \(games.count)"
             errorText = ""
             refresh()
         } catch {
@@ -80,7 +152,7 @@ final class AppModel: ObservableObject {
         do {
             let command = try planner.planSteamLaunch(appId: appId, bottleId: game.bottleId)
             _ = try ProcessLauncher().run(command, wait: false)
-            status = "Запуск \(game.name), лог: \(command.logPath)"
+            status = "Запуск \(game.name)"
             errorText = ""
             selectedLogSummary = (try? Diagnostics.summarizeLog(at: command.logPath)) ?? ""
         } catch {
@@ -90,12 +162,12 @@ final class AppModel: ObservableObject {
 
     func setBackend(_ backend: GraphicsBackend) {
         guard let steam = bottles.first(where: { $0.role == .steam }) else {
-            errorText = "Бутылка Steam не найдена"
+            errorText = "Сначала укажите Steam"
             return
         }
         do {
             try bottleStore.setBackend(id: steam.id, backend: backend)
-            status = "Бэкенд \(backend.rawValue) применится после перезапуска Steam"
+            status = "\(backend.displayName) применится после перезапуска Steam"
             errorText = ""
             refresh()
         } catch {
@@ -105,6 +177,20 @@ final class AppModel: ObservableObject {
 
     var selectedGame: GameEntry? {
         games.first(where: { $0.id == selectedGameId })
+    }
+
+    func isServiceBusy(_ service: ServiceStatus) -> Bool {
+        guard isBusy else { return false }
+        switch service.id {
+        case "rosetta":
+            return setupStatus.step == .rosetta
+        case "runtime":
+            return setupStatus.step == .runtime
+        case "steam":
+            return setupStatus.step == .steam
+        default:
+            return false
+        }
     }
 
     func effectiveBackend(for game: GameEntry) -> GraphicsBackend {
@@ -187,8 +273,59 @@ final class AppModel: ObservableObject {
                     self?.refresh()
                 }
             })
+        } catch let error as MacGamerError {
+            switch error {
+            case .steamPathMissing, .bottleNotFound:
+                break
+            default:
+                errorText = Diagnostics.explain(error)
+            }
         } catch {
             errorText = Diagnostics.explain(error)
         }
+    }
+
+    private func updateProgress(_ text: String) {
+        progressText = text
+    }
+
+    nonisolated private static func runInstall(
+        paths: AppPaths,
+        onProgress: @escaping @Sendable (String) async -> Void
+    ) async throws {
+        try await RuntimeStore(paths: paths).install { message in
+            let text = friendlyProgress(message)
+            Task {
+                await onProgress(text)
+            }
+        }
+    }
+
+    nonisolated private static func friendlyProgress(_ message: String) -> String {
+        if message.contains("download dxmt") {
+            return "Загрузка Metal (DXMT)…"
+        }
+        if message.contains("download dxvk") {
+            return "Загрузка Vulkan (DXVK)…"
+        }
+        if message.contains("extracted dxmt") {
+            return "Распаковка Metal (DXMT)…"
+        }
+        if message.contains("extracted dxvk") {
+            return "Распаковка Vulkan (DXVK)…"
+        }
+        if message.contains("merged dxmt") {
+            return "Подключение графики…"
+        }
+        if message.contains("extracted wine") || message.contains("wine from") {
+            return "Распаковка Wine…"
+        }
+        if message.contains("runtime installed") {
+            return "Среда запуска установлена"
+        }
+        if message.contains("already installed") {
+            return "Среда запуска уже установлена"
+        }
+        return message
     }
 }

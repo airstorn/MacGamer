@@ -11,23 +11,32 @@ struct MacGamerApp: App {
 
     var body: some Scene {
         WindowGroup("MacGamer") {
-            ContentView()
-                .environmentObject(model)
-                .frame(minWidth: 820, minHeight: 520)
-                .onAppear {
-                    NSApp.activate(ignoringOtherApps: true)
+            Group {
+                if model.setupStatus.step == .ready {
+                    ContentView()
+                } else {
+                    SetupWizardView()
                 }
+            }
+            .environmentObject(model)
+            .frame(minWidth: 900, minHeight: 560)
+            .onAppear {
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
-        .defaultSize(width: 980, height: 640)
+        .defaultSize(width: 1040, height: 680)
+        .windowResizability(.contentMinSize)
         .commands {
             CommandMenu("Steam") {
                 Button("Открыть Steam") {
                     model.openSteam()
                 }
                 .keyboardShortcut("s", modifiers: [.command])
+                .disabled(model.setupStatus.step != .ready && model.steamPathInput.isEmpty)
                 Button("Синхронизировать библиотеку") {
                     model.syncSteam()
                 }
+                .disabled(model.setupStatus.step != .ready)
             }
         }
     }

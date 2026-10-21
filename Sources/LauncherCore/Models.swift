@@ -5,6 +5,19 @@ public enum GraphicsBackend: String, Codable, CaseIterable, Sendable {
     case dxvk
     case d3dmetal
     case wined3d
+
+    public var displayName: String {
+        switch self {
+        case .dxmt:
+            return "Metal (DXMT)"
+        case .dxvk:
+            return "Vulkan (DXVK)"
+        case .d3dmetal:
+            return "D3DMetal"
+        case .wined3d:
+            return "Wine"
+        }
+    }
 }
 
 public enum BottleRole: String, Codable, Sendable {
@@ -22,6 +35,30 @@ public enum InstallState: String, Codable, Sendable {
     case ready
     case updating
     case missing
+
+    public var displayName: String {
+        switch self {
+        case .installing:
+            return "Устанавливается"
+        case .ready:
+            return "Установлена"
+        case .updating:
+            return "Обновляется"
+        case .missing:
+            return "Не найдена"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .installing, .updating:
+            return "arrow.triangle.2.circlepath.circle.fill"
+        case .ready:
+            return "checkmark.circle.fill"
+        case .missing:
+            return "xmark.circle.fill"
+        }
+    }
 }
 
 public struct BottleConfig: Codable, Equatable, Sendable {

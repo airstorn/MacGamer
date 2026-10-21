@@ -3,6 +3,7 @@ import Foundation
 public enum MacGamerError: Error, LocalizedError, Equatable {
     case rosettaMissing
     case runtimeNotInstalled
+    case bundledRuntimeMissing
     case runtimeHashMismatch(component: String)
     case runtimeDownloadFailed(String)
     case wineBinaryMissing
@@ -28,7 +29,9 @@ public enum MacGamerError: Error, LocalizedError, Equatable {
         case .rosettaMissing:
             return "Rosetta 2 не установлена. Установите: softwareupdate --install-rosetta --agree-to-license"
         case .runtimeNotInstalled:
-            return "Рантайм не установлен. Выполните: macgamer runtime install"
+            return "Среда запуска не установлена. Нажмите «Установить» в мастере или выполните: macgamer runtime install"
+        case .bundledRuntimeMissing:
+            return "Встроенный архив Wine не найден. Соберите приложение из репозитория с Git LFS"
         case .runtimeHashMismatch(let component):
             return "Хеш компонента \(component) не совпал с манифестом"
         case .runtimeDownloadFailed(let detail):
@@ -36,7 +39,7 @@ public enum MacGamerError: Error, LocalizedError, Equatable {
         case .wineBinaryMissing:
             return "В установленном рантайме не найден wine64"
         case .wineMacdrvMissing:
-            return "Wine не экспортирует macdrv_functions. Нужен winecx из tools/build-winecx.sh"
+            return "Wine не экспортирует macdrv_functions"
         case .bottleNotFound(let id):
             return "Бутылка не найдена: \(id)"
         case .bottleBroken(let id):

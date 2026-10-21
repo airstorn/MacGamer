@@ -209,12 +209,13 @@ public final class RuntimeStore: @unchecked Sendable {
             }
             archiveURL = archiveOverride
             progress?("wine from archive \(archiveOverride.lastPathComponent)")
+        } else if let bundled = Self.bundledWineArchive(named: component.archive) {
+            archiveURL = bundled
+            progress?("wine from bundled \(bundled.lastPathComponent)")
         } else if component.url.hasPrefix("local://") || component.sha256 == "local" {
             let local = paths.downloads.appendingPathComponent(component.archive)
             guard fm.fileExists(atPath: local.path) else {
-                throw MacGamerError.runtimeDownloadFailed(
-                    "wine archive missing. Run tools/build-winecx.sh then: macgamer runtime install --archive \"\(local.path)\""
-                )
+                throw MacGamerError.bundledRuntimeMissing
             }
             archiveURL = local
             progress?("wine from \(local.path)")
@@ -275,6 +276,31 @@ public final class RuntimeStore: @unchecked Sendable {
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)
         try Self.extract(archive: archiveURL, to: destination)
         progress?("extracted \(name)")
+    }
+
+    public static func bundledWineArchive(named archive: String) -> URL? {
+        let filename = URL(fileURLWithPath: archive).lastPathComponent
+        let fileURL = URL(fileURLWithPath: filename)
+        let ext = fileURL.pathExtension
+        let name = fileURL.deletingPathExtension().lastPathComponent
+        let subdirectories = [nil, "BundledRuntime"]
+        for subdirectory in subdirectories {
+            if let url = Bundle.module.url(
+                forResource: name,
+                withExtension: ext.isEmpty ? nil : ext,
+                subdirectory: subdirectory
+            ) {
+                return url
+            }
+            if let url = Bundle.module.url(forResource: filename, withExtension: nil, subdirectory: subdirectory) {
+                return url
+            }
+        }
+        let candidates = [
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/\(filename)"),
+            Bundle.main.resourceURL?.appendingPathComponent(filename)
+        ].compactMap { $0 }
+        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     public static func sha256(of file: URL) throws -> String {

@@ -15,7 +15,8 @@ let package = Package(
         .target(
             name: "LauncherCore",
             resources: [
-                .process("Resources")
+                .process("Resources"),
+                .copy("BundledRuntime/winecx-26.2-osx64.tar.xz")
             ]
         ),
         .executableTarget(

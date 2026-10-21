@@ -17,59 +17,132 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List {
-                Section("Система") {
-                    Text(model.doctorText)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                }
-                Section("Steam") {
-                    TextField("Путь к steam.exe или SteamSetup.exe", text: $model.steamPathInput)
-                    Button("Сохранить путь") { model.useSteamPath() }
-                    Button("Открыть Steam") { model.openSteam() }
-                    Button("Синхронизировать") { model.syncSteam() }
-                    if let steam = model.bottles.first(where: { $0.role == .steam }) {
-                        Picker("Бэкенд бутылки", selection: Binding(
-                            get: { steam.backend },
-                            set: { model.setBackend($0) }
-                        )) {
-                            ForEach(GraphicsBackend.allCases, id: \.self) { backend in
-                                Text(backend.rawValue).tag(backend)
-                            }
-                        }
-                    }
+            sidebar
+                .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 380)
+        } detail: {
+            library
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+
+    private var sidebar: some View {
+        List {
+            Section("Система") {
+                ForEach(model.serviceStatuses) { service in
+                    ServiceStatusRow(service: service, busy: model.isServiceBusy(service))
                 }
             }
-            .navigationTitle("MacGamer")
-        } detail: {
-            VStack(alignment: .leading, spacing: 12) {
-                if !model.errorText.isEmpty {
-                    Text(model.errorText)
-                        .foregroundStyle(.red)
-                        .textSelection(.enabled)
-                }
-                if !model.status.isEmpty {
-                    Text(model.status)
+            Section("Steam") {
+                if !model.steamPathInput.isEmpty {
+                    Text(model.steamPathInput)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
                 }
-                List(model.games, selection: $model.selectedGameId) { game in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(game.name).font(.headline)
-                            Text(statusLine(game))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                Button("Выбрать файл…") { model.chooseSteamFile() }
+                Button("Открыть Steam") { model.openSteam() }
+                Button("Синхронизировать") { model.syncSteam() }
+                if let steam = model.bottles.first(where: { $0.role == .steam }) {
+                    Picker("Графика", selection: Binding(
+                        get: { steam.backend },
+                        set: { model.setBackend($0) }
+                    )) {
+                        ForEach(GraphicsBackend.allCases, id: \.self) { backend in
+                            Text(backend.displayName).tag(backend)
                         }
-                        Spacer()
-                        Button("Лог") { model.showLatestLog(for: game) }
-                        Button("Играть") { model.play(game) }
-                            .disabled(game.installState != .ready || game.steamAppId == nil)
                     }
-                    .tag(game.id)
+                    .pickerStyle(.menu)
                 }
+            }
+        }
+        .navigationTitle("MacGamer")
+    }
+
+    private var library: some View {
+        VStack(spacing: 0) {
+            if !model.errorText.isEmpty {
+                Text(model.errorText)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+            }
+            if !model.status.isEmpty {
+                Text(model.status)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, model.errorText.isEmpty ? 10 : 6)
+            }
+            List(model.games, selection: $model.selectedGameId) { game in
+                gameRow(game)
+                    .tag(game.id)
+            }
+            .listStyle(.inset)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .overlay {
+                if model.games.isEmpty {
+                    ContentUnavailableView(
+                        "Библиотека пуста",
+                        systemImage: "gamecontroller",
+                        description: Text("Откройте Steam, установите игру и нажмите «Синхронизировать».")
+                    )
+                }
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            bottomPanel
+        }
+        .navigationTitle("Библиотека")
+    }
+
+    private func gameRow(_ game: GameEntry) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: game.installState.symbol)
+                .foregroundStyle(gameStatusColor(game.installState))
+                .frame(width: 16, height: 16)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(game.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(statusLine(game))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                Button("Лог") { model.showLatestLog(for: game) }
+                Button("Играть") { model.play(game) }
+                    .disabled(game.installState != .ready || game.steamAppId == nil)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .fixedSize()
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var bottomPanel: some View {
+        if model.selectedGame != nil || !model.selectedLogSummary.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                Divider()
                 if let game = model.selectedGame {
-                    GameLaunchSettingsView(game: game)
+                    DisclosureGroup("Дополнительно") {
+                        GameLaunchSettingsView(game: game)
+                            .padding(.top, 8)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                 }
                 if !model.selectedLogSummary.isEmpty {
                     ScrollView {
@@ -78,28 +151,40 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                     }
-                    .frame(maxHeight: 180)
+                    .frame(height: 120)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
                 }
             }
-            .padding()
-            .navigationTitle("Библиотека")
+            .background(.bar)
         }
     }
 
     private func statusLine(_ game: GameEntry) -> String {
         let app = game.steamAppId.map(String.init) ?? "-"
         var parts = [
-            game.installState.rawValue,
-            "app \(app)",
-            model.effectiveBackend(for: game).rawValue
+            game.installState.displayName,
+            "Steam \(app)",
+            model.effectiveBackend(for: game).displayName
         ]
         if game.hud {
-            parts.append("hud")
+            parts.append("HUD")
         }
         if let desktop = game.virtualDesktop {
             parts.append(desktop.spec)
         }
         return parts.joined(separator: " · ")
+    }
+
+    private func gameStatusColor(_ state: InstallState) -> Color {
+        switch state {
+        case .ready:
+            return .green
+        case .installing, .updating:
+            return .orange
+        case .missing:
+            return .red
+        }
     }
 }
 
@@ -117,15 +202,14 @@ private struct GameLaunchSettingsView: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Настройки запуска")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
             Picker("Бэкенд", selection: backendBinding) {
                 Text("как у бутылки").tag(GameBackendOption.bottle)
                 ForEach(GraphicsBackend.allCases, id: \.self) { backend in
-                    Text(backend.rawValue).tag(GameBackendOption.value(backend))
+                    Text(backend.displayName).tag(GameBackendOption.value(backend))
                 }
             }
+            .pickerStyle(.menu)
             Toggle("HUD", isOn: hudBinding)
             Picker("Виртуальный стол", selection: desktopBinding) {
                 Text("выключен").tag(DesktopOption.off)
@@ -134,6 +218,7 @@ private struct GameLaunchSettingsView: View {
                 }
                 Text("свой размер").tag(DesktopOption.custom)
             }
+            .pickerStyle(.menu)
             if desktopSelection == .custom {
                 HStack {
                     TextField("Ширина", text: $customWidth)
@@ -142,6 +227,7 @@ private struct GameLaunchSettingsView: View {
                     TextField("Высота", text: $customHeight)
                         .frame(width: 80)
                     Button("Применить") { applyCustomDesktop() }
+                    Spacer(minLength: 0)
                 }
             }
         }

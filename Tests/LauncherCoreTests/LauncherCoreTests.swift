@@ -10,10 +10,75 @@ final class LauncherCoreTests: XCTestCase {
         XCTAssertTrue(manifest.gptkCapable)
     }
 
+    func testBundledWineArchiveIsAvailable() throws {
+        let manifest = try RuntimeStore(paths: temporaryPaths()).loadManifest()
+        let archive = try XCTUnwrap(RuntimeStore.bundledWineArchive(named: manifest.components.wine.archive))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: archive.path))
+        let size = try FileManager.default.attributesOfItem(atPath: archive.path)[.size] as? NSNumber
+        XCTAssertGreaterThan(size?.int64Value ?? 0, 1_000_000)
+    }
+
     func testDoctorReportsChip() {
         let report = Doctor(paths: temporaryPaths()).report()
         XCTAssertFalse(report.chip.isEmpty)
         XCTAssertFalse(report.macOSVersion.isEmpty)
+    }
+
+    func testSetupGuideRequiresAppleSilicon() {
+        let status = SetupGuide.status(doctor: doctorReport(chip: "x86_64"), steamConfigured: true)
+        XCTAssertEqual(status.step, .unsupportedChip)
+    }
+
+    func testSetupGuideRequiresRosetta() {
+        let status = SetupGuide.status(
+            doctor: doctorReport(rosettaInstalled: false, runtimeInstalled: false),
+            steamConfigured: false
+        )
+        XCTAssertEqual(status.step, .rosetta)
+    }
+
+    func testSetupGuideRequiresRuntime() {
+        let status = SetupGuide.status(
+            doctor: doctorReport(runtimeInstalled: false),
+            steamConfigured: false
+        )
+        XCTAssertEqual(status.step, .runtime)
+    }
+
+    func testSetupGuideRequiresSteam() {
+        let status = SetupGuide.status(doctor: doctorReport(), steamConfigured: false)
+        XCTAssertEqual(status.step, .steam)
+        let bottles = [
+            BottleConfig(name: "Steam", role: .steam, steamExePath: nil)
+        ]
+        XCTAssertEqual(SetupGuide.status(doctor: doctorReport(), bottles: bottles).step, .steam)
+    }
+
+    func testSetupGuideReadyWhenSteamConfigured() {
+        let bottles = [
+            BottleConfig(name: "Steam", role: .steam, steamExePath: "/tmp/steam.exe")
+        ]
+        let status = SetupGuide.status(doctor: doctorReport(), bottles: bottles)
+        XCTAssertEqual(status.step, .ready)
+        XCTAssertEqual(status.title, "Готово к играм")
+    }
+
+    func testSetupGuideServicesShowHealthIcons() {
+        let missing = SetupGuide.services(
+            doctor: doctorReport(rosettaInstalled: false, runtimeInstalled: false),
+            steamConfigured: false
+        )
+        XCTAssertEqual(missing.first { $0.id == "silicon" }?.health, .ok)
+        XCTAssertEqual(missing.first { $0.id == "rosetta" }?.health, .missing)
+        XCTAssertEqual(missing.first { $0.id == "runtime" }?.health, .missing)
+        XCTAssertEqual(missing.first { $0.id == "steam" }?.health, .missing)
+        XCTAssertEqual(missing.first { $0.id == "d3dmetal" }?.health, .optionalMissing)
+
+        let ready = SetupGuide.services(
+            doctor: doctorReport(),
+            steamConfigured: true
+        )
+        XCTAssertTrue(ready.filter { $0.id != "d3dmetal" }.allSatisfy { $0.health == .ok })
     }
 
     func testAppManifestReadyAndInstalling() throws {
@@ -353,6 +418,23 @@ final class LauncherCoreTests: XCTestCase {
         FileManager.default.createFile(atPath: steamExe.path, contents: Data())
         try bottleStore.setSteamPath(id: bottle.id, path: steamExe.path)
         return (paths, try bottleStore.load(id: bottle.id), steamExe)
+    }
+
+    private func doctorReport(
+        chip: String = "arm64",
+        rosettaInstalled: Bool = true,
+        runtimeInstalled: Bool = true
+    ) -> DoctorReport {
+        DoctorReport(
+            chip: chip,
+            macOSVersion: "Version 14.0",
+            rosettaInstalled: rosettaInstalled,
+            runtimeInstalled: runtimeInstalled,
+            runtimeId: runtimeInstalled ? "winecx-26.2" : nil,
+            gptkCapable: runtimeInstalled,
+            gptkImported: false,
+            issues: []
+        )
     }
 
     private func temporaryPaths() -> AppPaths {
