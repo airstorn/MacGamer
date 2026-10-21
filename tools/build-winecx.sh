@@ -1,11 +1,16 @@
-#!/usr/bin/env arch -x86_64 /bin/bash
+#!/bin/bash
+# Run under Rosetta: arch -x86_64 /bin/bash tools/build-winecx.sh
 set -euo pipefail
+if [[ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" != "1" ]] \
+  && [[ "$(uname -m)" == "arm64" ]]; then
+  exec /usr/bin/arch -x86_64 /bin/bash "$0" "$@"
+fi
 
-CX_VERSION="${CX_VERSION:-26.2.0}"
+CX_VERSION="${CX_VERSION:-26.3.0}"
 SOURCE_URL="${SOURCE_URL:-https://media.codeweavers.com/pub/crossover/source/crossover-sources-${CX_VERSION}.tar.gz}"
 LLVM_MINGW_URL="${LLVM_MINGW_URL:-https://github.com/mstorsjo/llvm-mingw/releases/download/20231017/llvm-mingw-20231017-ucrt-macos-universal.tar.xz}"
-MONO_URL="${MONO_URL:-https://github.com/madewokherd/wine-mono/releases/download/wine-mono-9.0.0/wine-mono-9.0.0-x86.tar.xz}"
-WORKROOT="${WORKROOT:-$HOME/winecx-build}"
+MONO_URL="${MONO_URL:-https://github.com/madewokherd/wine-mono/releases/download/wine-mono-10.0.0/wine-mono-10.0.0-x86.tar.xz}"
+WORKROOT="${WORKROOT:-$HOME/winecx-build-${CX_VERSION}}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 OUT_DIR="${OUT_DIR:-$HOME/Library/Application Support/MacGamer/downloads}"
 ARTIFACT_NAME="winecx-${CX_VERSION%.*}-osx64.tar.xz"
@@ -30,19 +35,18 @@ export HOMEBREW_NO_INSTALL_UPGRADE=1
 export HOMEBREW_NO_ENV_HINTS=1
 export NONINTERACTIVE=1
 BREW=/usr/local/bin/brew
-need_install=()
-for formula in bison pkgconf coreutils freetype gnutls molten-vk sdl2; do
+for formula in bison pkgconf freetype gnutls molten-vk sdl2; do
   if $BREW list --formula "$formula" &>/dev/null; then
     echo "brew: $formula already installed"
-  elif $BREW list --formula pkg-config &>/dev/null && [[ "$formula" == "pkgconf" ]]; then
-    echo "brew: pkg-config already installed"
-  else
-    need_install+=("$formula")
+    continue
   fi
+  if [[ "$formula" == "pkgconf" ]] && $BREW list --formula pkg-config &>/dev/null; then
+    echo "brew: pkg-config already installed"
+    continue
+  fi
+  echo "brew: installing $formula"
+  $BREW install "$formula" || echo "warning: brew install $formula failed, continuing"
 done
-if ((${#need_install[@]})); then
-  $BREW install "${need_install[@]}" || true
-fi
 
 mkdir -p "$WORKROOT" "$OUT_DIR"
 cd "$WORKROOT"
@@ -100,8 +104,13 @@ export CFLAGS="-O3 -Wno-implicit-function-declaration -Wno-deprecated-declaratio
 export LDFLAGS="-Wl,-rpath,@loader_path/../../"
 export MACOSX_DEPLOYMENT_TARGET=10.14
 export CROSSCFLAGS="-O3"
-export SDL2_CFLAGS="-I$($BREW --prefix sdl2)/include -I$($BREW --prefix sdl2)/include/SDL2"
-export PKG_CONFIG_PATH="$($BREW --prefix)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+SDL2_PREFIX="$($BREW --prefix sdl2 2>/dev/null || true)"
+if [[ ! -d "${SDL2_PREFIX:-}/include/SDL2" ]]; then
+  SDL2_PREFIX="/usr/local/opt/sdl2"
+fi
+export SDL2_CFLAGS="-I${SDL2_PREFIX}/include -I${SDL2_PREFIX}/include/SDL2"
+export PKG_CONFIG_PATH="${SDL2_PREFIX}/lib/pkgconfig:$($BREW --prefix)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+echo "sdl2: $SDL2_PREFIX"
 export ac_cv_lib_soname_MoltenVK="libMoltenVK.dylib"
 export ac_cv_lib_soname_vulkan=""
 
@@ -137,7 +146,7 @@ pushd "$BUILDROOT/wine64" >/dev/null
   --with-mingw \
   --without-netapi \
   --with-opencl \
-  --with-opengl \
+  --without-opengl \
   --without-oss \
   --with-pcap \
   --with-pthread \
@@ -171,10 +180,49 @@ if [[ ! -d "$STAGE/share/wine/mono" ]]; then
   tar -xJf "$WORKROOT/wine-mono.tar.xz" -C "$STAGE/share/wine/mono"
 fi
 
-MVK="$($BREW --prefix molten-vk)/lib/libMoltenVK.dylib"
-if [[ -f "$MVK" ]]; then
-  cp -f "$MVK" "$STAGE/lib/libMoltenVK.dylib"
-fi
+mkdir -p "$STAGE/lib" "$STAGE/lib64"
+copy_runtime_lib() {
+  local src="$1"
+  [[ -f "$src" ]] || return 0
+  local name
+  name=$(basename "$src")
+  cp -f "$src" "$STAGE/lib/$name"
+  cp -f "$src" "$STAGE/lib64/$name"
+}
+copy_runtime_lib "$($BREW --prefix molten-vk)/lib/libMoltenVK.dylib"
+copy_runtime_lib "${SDL2_PREFIX}/lib/libSDL2-2.0.0.dylib"
+copy_runtime_lib "$($BREW --prefix freetype)/lib/libfreetype.6.dylib"
+copy_runtime_lib "$($BREW --prefix gnutls)/lib/libgnutls.30.dylib"
+copy_runtime_lib "$($BREW --prefix libpng)/lib/libpng16.16.dylib"
+copy_runtime_lib "$($BREW --prefix brotli)/lib/libbrotlidec.1.dylib"
+copy_runtime_lib "$($BREW --prefix brotli)/lib/libbrotlicommon.1.dylib"
+copy_runtime_lib "$($BREW --prefix gettext)/lib/libintl.8.dylib"
+copy_runtime_lib "$($BREW --prefix libunistring)/lib/libunistring.5.dylib"
+copy_runtime_lib "$($BREW --prefix libidn2)/lib/libidn2.0.dylib"
+copy_runtime_lib "$($BREW --prefix libtasn1)/lib/libtasn1.6.dylib"
+copy_runtime_lib "$($BREW --prefix nettle)/lib/libnettle.9.dylib"
+copy_runtime_lib "$($BREW --prefix nettle)/lib/libhogweed.7.dylib"
+for cand in \
+  "$($BREW --prefix gmp 2>/dev/null)/lib/libgmp.10.dylib" \
+  /usr/local/opt/gmp/lib/libgmp.10.dylib; do
+  copy_runtime_lib "$cand"
+done
+for cand in \
+  "$($BREW --prefix p11-kit 2>/dev/null)/lib/libp11-kit.0.dylib" \
+  /usr/local/opt/p11-kit/lib/libp11-kit.0.dylib; do
+  copy_runtime_lib "$cand"
+done
+copy_runtime_lib "$($BREW --prefix libffi)/lib/libffi.8.dylib"
+(
+  cd "$STAGE/lib"
+  [[ -f libfreetype.6.dylib ]] && ln -sf libfreetype.6.dylib libfreetype.dylib
+  [[ -f libgnutls.30.dylib ]] && ln -sf libgnutls.30.dylib libgnutls.dylib
+  [[ -f libgmp.10.dylib ]] && ln -sf libgmp.10.dylib libgmp.dylib
+  [[ -f libSDL2-2.0.0.dylib ]] && ln -sf libSDL2-2.0.0.dylib libSDL2.dylib
+  for f in libfreetype.dylib libgnutls.dylib libgmp.dylib libSDL2.dylib; do
+    [[ -e "$f" ]] && cp -f "$f" ../lib64/ 2>/dev/null || true
+  done
+)
 
 WINEMAC=$(find "$STAGE" -name 'winemac.so' | head -1 || true)
 if [[ -z "$WINEMAC" ]]; then

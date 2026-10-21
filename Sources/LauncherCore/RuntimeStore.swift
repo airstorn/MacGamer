@@ -131,7 +131,7 @@ public final class RuntimeStore: @unchecked Sendable {
         return overlayRoot
     }
 
-    public func install(wineArchive: URL? = nil, progress: ((String) -> Void)? = nil) async throws {
+    public func install(wineArchive: URL? = nil, force: Bool = false, progress: ((String) -> Void)? = nil) async throws {
         try paths.ensureLayout()
         let report = Doctor(paths: paths).report()
         if report.chip == "arm64" && !report.rosettaInstalled {
@@ -142,8 +142,13 @@ public final class RuntimeStore: @unchecked Sendable {
         let dest = paths.runtimeDirectory(id: manifest.id)
         let fm = FileManager.default
         if fm.fileExists(atPath: dest.appendingPathComponent("runtime-info.json").path) {
-            progress?("runtime already installed: \(manifest.id)")
-            return
+            if force {
+                progress?("removing previous runtime: \(manifest.id)")
+                try fm.removeItem(at: dest)
+            } else {
+                progress?("runtime already installed: \(manifest.id)")
+                return
+            }
         }
 
         try fm.createDirectory(at: dest, withIntermediateDirectories: true)

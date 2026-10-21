@@ -3,7 +3,7 @@ set -euo pipefail
 
 CX_APP="${1:-$HOME/Applications/CrossOver.app}"
 OUT_DIR="${OUT_DIR:-$HOME/Library/Application Support/MacGamer/downloads}"
-ARTIFACT_NAME="${ARTIFACT_NAME:-winecx-26.2-osx64.tar.xz}"
+ARTIFACT_NAME="${ARTIFACT_NAME:-winecx-26.3-osx64.tar.xz}"
 CX_ROOT="$CX_APP/Contents/SharedSupport/CrossOver"
 
 if [[ ! -x "$CX_ROOT/bin/wineloader" ]]; then
