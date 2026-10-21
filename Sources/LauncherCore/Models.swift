@@ -55,7 +55,54 @@ public struct BottleConfig: Codable, Equatable, Sendable {
     }
 }
 
-public struct GameEntry: Codable, Equatable, Identifiable, Sendable {
+public struct VirtualDesktop: Codable, Equatable, Sendable {
+    public static let minimum = 640
+    public static let maximum = 7680
+
+    public var width: Int
+    public var height: Int
+
+    public init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+    }
+
+    public var spec: String { "\(width)x\(height)" }
+
+    public func validate() throws {
+        let range = Self.minimum...Self.maximum
+        guard range.contains(width), range.contains(height) else {
+            throw MacGamerError.invalidDesktopSize(spec)
+        }
+    }
+
+    public static func parse(_ spec: String) throws -> VirtualDesktop {
+        let parts = spec.split(separator: "x", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let width = Int(parts[0]),
+              let height = Int(parts[1]) else {
+            throw MacGamerError.invalidDesktopSize(spec)
+        }
+        let desktop = VirtualDesktop(width: width, height: height)
+        try desktop.validate()
+        return desktop
+    }
+}
+
+public enum DesktopOverride: Equatable, Sendable {
+    case inherit
+    case disabled
+    case enabled(VirtualDesktop)
+
+    public static func parse(_ spec: String) throws -> DesktopOverride {
+        if spec.lowercased() == "off" {
+            return .disabled
+        }
+        return .enabled(try VirtualDesktop.parse(spec))
+    }
+}
+
+public struct GameEntry: Equatable, Identifiable, Sendable {
     public var id: String
     public var name: String
     public var bottleId: String
@@ -68,6 +115,7 @@ public struct GameEntry: Codable, Equatable, Identifiable, Sendable {
     public var env: [String: String]
     public var backend: GraphicsBackend?
     public var hud: Bool
+    public var virtualDesktop: VirtualDesktop?
 
     public init(
         id: String = UUID().uuidString,
@@ -81,7 +129,8 @@ public struct GameEntry: Codable, Equatable, Identifiable, Sendable {
         arguments: [String] = [],
         env: [String: String] = [:],
         backend: GraphicsBackend? = nil,
-        hud: Bool = false
+        hud: Bool = false,
+        virtualDesktop: VirtualDesktop? = nil
     ) {
         self.id = id
         self.name = name
@@ -95,6 +144,48 @@ public struct GameEntry: Codable, Equatable, Identifiable, Sendable {
         self.env = env
         self.backend = backend
         self.hud = hud
+        self.virtualDesktop = virtualDesktop
+    }
+}
+
+extension GameEntry: Codable {
+    enum CodingKeys: String, CodingKey {
+        case id, name, bottleId, source, steamAppId, installState
+        case exe, workdir, arguments, env, backend, hud, virtualDesktop
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        bottleId = try container.decode(String.self, forKey: .bottleId)
+        source = try container.decode(GameSource.self, forKey: .source)
+        steamAppId = try container.decodeIfPresent(Int.self, forKey: .steamAppId)
+        installState = try container.decode(InstallState.self, forKey: .installState)
+        exe = try container.decodeIfPresent(String.self, forKey: .exe)
+        workdir = try container.decodeIfPresent(String.self, forKey: .workdir)
+        arguments = try container.decodeIfPresent([String].self, forKey: .arguments) ?? []
+        env = try container.decodeIfPresent([String: String].self, forKey: .env) ?? [:]
+        backend = try container.decodeIfPresent(GraphicsBackend.self, forKey: .backend)
+        hud = try container.decodeIfPresent(Bool.self, forKey: .hud) ?? false
+        virtualDesktop = try container.decodeIfPresent(VirtualDesktop.self, forKey: .virtualDesktop)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(bottleId, forKey: .bottleId)
+        try container.encode(source, forKey: .source)
+        try container.encodeIfPresent(steamAppId, forKey: .steamAppId)
+        try container.encode(installState, forKey: .installState)
+        try container.encodeIfPresent(exe, forKey: .exe)
+        try container.encodeIfPresent(workdir, forKey: .workdir)
+        try container.encode(arguments, forKey: .arguments)
+        try container.encode(env, forKey: .env)
+        try container.encodeIfPresent(backend, forKey: .backend)
+        try container.encode(hud, forKey: .hud)
+        try container.encodeIfPresent(virtualDesktop, forKey: .virtualDesktop)
     }
 }
 
@@ -142,6 +233,7 @@ public struct LaunchCommand: Equatable, Sendable {
     public var backend: GraphicsBackend
     public var winePrefix: String
     public var logPath: String
+    public var virtualDesktop: VirtualDesktop?
 }
 
 public struct LaunchResult: Equatable, Sendable {

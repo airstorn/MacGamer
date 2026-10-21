@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
     @Published var selectedLogSummary: String = ""
     @Published var steamPathInput: String = ""
     @Published var errorText: String = ""
+    @Published var selectedGameId: String?
 
     let paths = AppPaths()
     private let libraryStore: LibraryStore
@@ -77,7 +78,7 @@ final class AppModel: ObservableObject {
             return
         }
         do {
-            let command = try planner.planSteamLaunch(appId: appId, bottleId: game.bottleId, hud: game.hud)
+            let command = try planner.planSteamLaunch(appId: appId, bottleId: game.bottleId)
             _ = try ProcessLauncher().run(command, wait: false)
             status = "Запуск \(game.name), лог: \(command.logPath)"
             errorText = ""
@@ -96,6 +97,59 @@ final class AppModel: ObservableObject {
             try bottleStore.setBackend(id: steam.id, backend: backend)
             status = "Бэкенд \(backend.rawValue) применится после перезапуска Steam"
             errorText = ""
+            refresh()
+        } catch {
+            errorText = Diagnostics.explain(error)
+        }
+    }
+
+    var selectedGame: GameEntry? {
+        games.first(where: { $0.id == selectedGameId })
+    }
+
+    func effectiveBackend(for game: GameEntry) -> GraphicsBackend {
+        if let backend = game.backend {
+            return backend
+        }
+        let bottleBackend = bottles.first(where: { $0.id == game.bottleId })?.backend ?? .dxmt
+        return bottleBackend == .wined3d ? .dxmt : bottleBackend
+    }
+
+    func setGameBackend(_ backend: GraphicsBackend?, for game: GameEntry) {
+        do {
+            _ = try libraryStore.updateLaunchSettings(
+                id: game.id,
+                backend: backend,
+                resetBackend: backend == nil
+            )
+            errorText = ""
+            status = "Настройки \(game.name) сохранены"
+            refresh()
+        } catch {
+            errorText = Diagnostics.explain(error)
+        }
+    }
+
+    func setGameHud(_ hud: Bool, for game: GameEntry) {
+        do {
+            _ = try libraryStore.updateLaunchSettings(id: game.id, hud: hud)
+            errorText = ""
+            status = "Настройки \(game.name) сохранены"
+            refresh()
+        } catch {
+            errorText = Diagnostics.explain(error)
+        }
+    }
+
+    func setGameDesktop(_ desktop: VirtualDesktop?, for game: GameEntry) {
+        do {
+            _ = try libraryStore.updateLaunchSettings(
+                id: game.id,
+                virtualDesktop: desktop,
+                resetDesktop: desktop == nil
+            )
+            errorText = ""
+            status = "Настройки \(game.name) сохранены"
             refresh()
         } catch {
             errorText = Diagnostics.explain(error)

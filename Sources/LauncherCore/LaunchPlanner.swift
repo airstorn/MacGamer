@@ -4,11 +4,13 @@ public struct LaunchPlanner: Sendable {
     private let paths: AppPaths
     private let runtimeStore: RuntimeStore
     private let bottleStore: BottleStore
+    private let libraryStore: LibraryStore
 
     public init(paths: AppPaths = AppPaths()) {
         self.paths = paths
         self.runtimeStore = RuntimeStore(paths: paths)
         self.bottleStore = BottleStore(paths: paths, runtimeStore: runtimeStore)
+        self.libraryStore = LibraryStore(paths: paths)
     }
 
     public func planManual(
@@ -18,7 +20,8 @@ public struct LaunchPlanner: Sendable {
         workdir: String? = nil,
         env: [String: String] = [:],
         backend: GraphicsBackend? = nil,
-        hud: Bool = false,
+        hud: Bool? = nil,
+        desktop: DesktopOverride = .inherit,
         gameId: String = "manual"
     ) throws -> LaunchCommand {
         let bottle = try bottleStore.load(id: bottleId)
@@ -26,13 +29,16 @@ public struct LaunchPlanner: Sendable {
             throw MacGamerError.bottleBroken(bottleId)
         }
         let selected = backend ?? bottle.backend
+        let virtualDesktop = try resolvedDesktop(desktop, saved: nil)
         return try makeCommand(
             bottle: bottle,
             windowsArgs: [exe] + arguments,
             workdir: workdir,
             extraEnv: env,
             backend: selected,
-            hud: hud || bottle.hud,
+            hud: hud ?? false,
+            virtualDesktop: virtualDesktop,
+            desktopName: "mg-manual",
             gameId: gameId
         )
     }
@@ -53,11 +59,20 @@ public struct LaunchPlanner: Sendable {
             extraEnv: [:],
             backend: backend,
             hud: bottle.hud,
+            virtualDesktop: nil,
+            desktopName: "mg-steam",
             gameId: "steam-client"
         )
     }
 
-    public func planSteamLaunch(appId: Int, bottleId: String? = nil, hud: Bool = false) throws -> LaunchCommand {
+    public func planSteamLaunch(
+        appId: Int,
+        bottleId: String? = nil,
+        backend: GraphicsBackend? = nil,
+        useBottleBackend: Bool = false,
+        hud: Bool? = nil,
+        desktop: DesktopOverride = .inherit
+    ) throws -> LaunchCommand {
         let bottle = try resolveSteamBottle(id: bottleId)
         guard let steamPath = bottle.steamExePath else {
             throw MacGamerError.steamPathMissing
@@ -65,14 +80,27 @@ public struct LaunchPlanner: Sendable {
         let resolved = try resolveSteamExecutable(path: steamPath, bottle: bottle)
         let steamDir = URL(fileURLWithPath: resolved).deletingLastPathComponent()
         try SteamWebHelperFix.apply(steamDirectory: steamDir)
-        let backend = preferredGraphicsBackend(bottle.backend)
+        let game = gameEntry(appId: appId, bottleId: bottle.id)
+        let selectedBackend: GraphicsBackend
+        if useBottleBackend {
+            selectedBackend = preferredGraphicsBackend(bottle.backend)
+        } else if let backend {
+            selectedBackend = backend
+        } else if let gameBackend = game?.backend {
+            selectedBackend = gameBackend
+        } else {
+            selectedBackend = preferredGraphicsBackend(bottle.backend)
+        }
+        let virtualDesktop = try resolvedDesktop(desktop, saved: game?.virtualDesktop)
         return try makeCommand(
             bottle: bottle,
             windowsArgs: [resolved, "-applaunch", "\(appId)"],
             workdir: steamDir.path,
             extraEnv: [:],
-            backend: backend,
-            hud: hud || bottle.hud,
+            backend: selectedBackend,
+            hud: hud ?? game?.hud ?? false,
+            virtualDesktop: virtualDesktop,
+            desktopName: "mg-\(appId)",
             gameId: "steam-\(appId)"
         )
     }
@@ -93,6 +121,7 @@ public struct LaunchPlanner: Sendable {
             "backend: \(command.backend.rawValue)",
             "prefix: \(command.winePrefix)",
             "log: \(command.logPath)",
+            "desktop: \(command.virtualDesktop?.spec ?? "off")",
             "cmd: /usr/bin/arch -x86_64 \(command.executable) \(command.arguments.joined(separator: " "))"
         ]
         if let cwd = command.workingDirectory {
@@ -135,6 +164,26 @@ public struct LaunchPlanner: Sendable {
         throw MacGamerError.steamPathInvalid(path)
     }
 
+    private func gameEntry(appId: Int, bottleId: String) -> GameEntry? {
+        let games = (try? libraryStore.load().games) ?? []
+        return games.first { $0.steamAppId == appId && $0.bottleId == bottleId }
+    }
+
+    private func resolvedDesktop(_ override: DesktopOverride, saved: VirtualDesktop?) throws -> VirtualDesktop? {
+        switch override {
+        case .inherit:
+            if let saved {
+                try saved.validate()
+            }
+            return saved
+        case .disabled:
+            return nil
+        case .enabled(let desktop):
+            try desktop.validate()
+            return desktop
+        }
+    }
+
     private func makeCommand(
         bottle: BottleConfig,
         windowsArgs: [String],
@@ -142,6 +191,8 @@ public struct LaunchPlanner: Sendable {
         extraEnv: [String: String],
         backend: GraphicsBackend,
         hud: Bool,
+        virtualDesktop: VirtualDesktop?,
+        desktopName: String,
         gameId: String
     ) throws -> LaunchCommand {
         let report = Doctor(paths: paths).report()
@@ -192,6 +243,15 @@ public struct LaunchPlanner: Sendable {
         if !fallbackParts.isEmpty {
             environment["DYLD_FALLBACK_LIBRARY_PATH"] = fallbackParts.joined(separator: ":")
         }
+        let caCandidates = [
+            "/usr/local/etc/ca-certificates/cert.pem",
+            "/usr/local/etc/openssl@3/cert.pem",
+            "/etc/ssl/cert.pem"
+        ]
+        if let ca = caCandidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            environment["SSL_CERT_FILE"] = ca
+            environment["CURL_CA_BUNDLE"] = ca
+        }
         if let wineDll = try runtimeStore.wineDllPath() {
             let prepend = backendEnv.dllPathPrepend.map { "\($0):" } ?? ""
             environment["WINEDLLPATH"] = prepend + wineDll
@@ -205,14 +265,24 @@ public struct LaunchPlanner: Sendable {
             environment[key] = value
         }
 
+        var arguments = windowsArgs
+        if let virtualDesktop {
+            try virtualDesktop.validate()
+            arguments = [
+                "explorer",
+                "/desktop=\(desktopName),\(virtualDesktop.spec)"
+            ] + windowsArgs
+        }
+
         return LaunchCommand(
             executable: wineBinary.path,
-            arguments: windowsArgs,
+            arguments: arguments,
             environment: environment,
             workingDirectory: workdir,
             backend: backend,
             winePrefix: paths.bottlePrefix(id: bottle.id).path,
-            logPath: logPath
+            logPath: logPath,
+            virtualDesktop: virtualDesktop
         )
     }
 }

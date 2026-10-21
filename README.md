@@ -20,8 +20,11 @@ swift run macgamer doctor
 GUI:
 
 ```bash
-swift run MacGamerApp
+tools/package-app.sh
+open ~/Applications/MacGamer.app
 ```
+
+Скрипт собирает `MacGamer.app` и копирует его в `~/Applications`, после этого приложение открывается по значку в Finder, Launchpad и Dock. Для разового запуска из репозитория по-прежнему можно `swift run MacGamerApp`.
 
 ## Данные
 
@@ -42,7 +45,9 @@ macgamer bottle create --name Steam --role steam
 macgamer steam use /path/to/steam.exe
 macgamer steam open --dry-run
 macgamer steam sync
+macgamer game set --app 570 --backend dxvk --hud on --desktop 1920x1080
 macgamer run --app 570 --dry-run
+macgamer run --app 570 --backend dxmt --no-hud --desktop off --dry-run
 macgamer backend set --bottle <id> --backend dxvk
 macgamer deps vcrun2022 --bottle <id> --installer /path/to/VC_redist.x64.exe --dry-run
 macgamer gptk import /path/to/Game_Porting_Toolkit.dmg
@@ -51,7 +56,7 @@ macgamer log summarize /path/to/file.log
 
 Steam и игры утилита не скачивает. Укажите путь к `steam.exe` или `SteamSetup.exe`, войдите в клиент и установите игру сами — MacGamer периодически сканирует `appmanifest_*.acf` и обновляет библиотеку.
 
-Перед каждым `steam open` MacGamer ставит обёртку `steamwebhelper` с `--disable-gpu --single-process`, иначе окно Steam на Wine часто остаётся чёрным. Для UI клиента используется WineD3D; бэкенд бутылки (DXMT/DXVK) применяется к играм.
+Перед каждым `steam open` MacGamer ставит обёртку `steamwebhelper` с `--disable-gpu --single-process`, иначе окно Steam на Wine часто остаётся чёрным. Для UI клиента используется WineD3D. У игры можно задать свой бэкенд, HUD и виртуальный стол Wine (`game set` или блок настроек в библиотеке); бэкенд бутылки остаётся значением по умолчанию.
 
 ## Графика
 

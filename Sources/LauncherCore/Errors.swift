@@ -15,6 +15,8 @@ public enum MacGamerError: Error, LocalizedError, Equatable {
     case gptkPayloadInvalid(String)
     case gptkNotImported
     case unsupportedBackend(GraphicsBackend)
+    case gameNotFound(String)
+    case invalidDesktopSize(String)
     case missingExecutable(String)
     case processFailed(String)
     case dependencyFailed(String)
@@ -51,6 +53,10 @@ public enum MacGamerError: Error, LocalizedError, Equatable {
             return "D3DMetal не импортирован. Укажите DMG через macgamer gptk import <dmg>"
         case .unsupportedBackend(let backend):
             return "Бэкенд недоступен: \(backend.rawValue)"
+        case .gameNotFound(let app):
+            return "Игра не найдена в библиотеке: \(app)"
+        case .invalidDesktopSize(let spec):
+            return "Некорректный размер виртуального стола: \(spec). Допустимо от 640 до 7680"
         case .missingExecutable(let path):
             return "Исполняемый файл не найден: \(path)"
         case .processFailed(let detail):

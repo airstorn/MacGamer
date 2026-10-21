@@ -26,6 +26,48 @@ public final class LibraryStore: @unchecked Sendable {
         try data.write(to: paths.libraryFile, options: .atomic)
     }
 
+    public func game(steamAppId: Int, bottleId: String? = nil) throws -> GameEntry {
+        let doc = try load()
+        if let game = doc.games.first(where: {
+            $0.steamAppId == steamAppId && (bottleId == nil || $0.bottleId == bottleId)
+        }) {
+            return game
+        }
+        throw MacGamerError.gameNotFound(String(steamAppId))
+    }
+
+    public func updateLaunchSettings(
+        id: String,
+        backend: GraphicsBackend? = nil,
+        resetBackend: Bool = false,
+        hud: Bool? = nil,
+        virtualDesktop: VirtualDesktop? = nil,
+        resetDesktop: Bool = false
+    ) throws -> GameEntry {
+        try queue.sync {
+            var doc = try load()
+            guard let index = doc.games.firstIndex(where: { $0.id == id }) else {
+                throw MacGamerError.gameNotFound(id)
+            }
+            if resetBackend {
+                doc.games[index].backend = nil
+            } else if let backend {
+                doc.games[index].backend = backend
+            }
+            if let hud {
+                doc.games[index].hud = hud
+            }
+            if resetDesktop {
+                doc.games[index].virtualDesktop = nil
+            } else if let virtualDesktop {
+                try virtualDesktop.validate()
+                doc.games[index].virtualDesktop = virtualDesktop
+            }
+            try save(doc)
+            return doc.games[index]
+        }
+    }
+
     public func upsert(_ game: GameEntry) throws {
         try queue.sync {
             var doc = try load()

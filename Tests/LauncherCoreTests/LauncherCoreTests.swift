@@ -111,6 +111,155 @@ final class LauncherCoreTests: XCTestCase {
         let command = try LaunchPlanner(paths: paths).planSteamLaunch(appId: 570, bottleId: bottle.id)
         XCTAssertEqual(command.arguments, [steamExe.path, "-applaunch", "570"])
         XCTAssertEqual(command.backend, .dxmt)
+        XCTAssertNil(command.virtualDesktop)
+        XCTAssertTrue(LaunchPlanner(paths: paths).describe(command).contains("desktop: off"))
+    }
+
+    func testGameLaunchSettingsOverrideBottle() throws {
+        let (paths, bottle, steamExe) = try seededSteamBottle()
+        let store = LibraryStore(paths: paths)
+        try store.upsert(GameEntry(
+            name: "Dota 2",
+            bottleId: bottle.id,
+            source: .steam,
+            steamAppId: 570,
+            backend: .dxvk,
+            hud: true,
+            virtualDesktop: VirtualDesktop(width: 1920, height: 1080)
+        ))
+
+        let planner = LaunchPlanner(paths: paths)
+        let command = try planner.planSteamLaunch(appId: 570, bottleId: bottle.id)
+        XCTAssertEqual(command.backend, .dxvk)
+        XCTAssertEqual(command.environment["DXVK_HUD"], "1")
+        XCTAssertEqual(command.virtualDesktop, VirtualDesktop(width: 1920, height: 1080))
+        XCTAssertEqual(
+            command.arguments,
+            ["explorer", "/desktop=mg-570,1920x1080", steamExe.path, "-applaunch", "570"]
+        )
+        XCTAssertTrue(planner.describe(command).contains("desktop: 1920x1080"))
+
+        let withoutHud = try planner.planSteamLaunch(appId: 570, bottleId: bottle.id, hud: false)
+        XCTAssertNil(withoutHud.environment["DXVK_HUD"])
+        let withoutDesktop = try planner.planSteamLaunch(appId: 570, bottleId: bottle.id, desktop: .disabled)
+        XCTAssertEqual(withoutDesktop.arguments, [steamExe.path, "-applaunch", "570"])
+        XCTAssertNil(withoutDesktop.virtualDesktop)
+
+        let dxmtHud = try planner.planSteamLaunch(appId: 570, bottleId: bottle.id, backend: .dxmt, hud: true)
+        XCTAssertEqual(dxmtHud.backend, .dxmt)
+        XCTAssertEqual(dxmtHud.environment["DXMT_DEBUG"], "1")
+
+        let wined3d = try planner.planSteamLaunch(appId: 570, bottleId: bottle.id, backend: .wined3d)
+        XCTAssertEqual(wined3d.backend, .wined3d)
+
+        let open = try planner.planSteamOpen(bottleId: bottle.id)
+        XCTAssertEqual(open.backend, .dxmt)
+        XCTAssertEqual(open.arguments, [steamExe.path])
+        XCTAssertNil(open.virtualDesktop)
+        XCTAssertFalse(open.arguments.contains { $0.hasPrefix("/desktop=") })
+    }
+
+    func testInvalidDesktopSizeIsRejected() throws {
+        XCTAssertThrowsError(try VirtualDesktop.parse("100x100")) { error in
+            XCTAssertEqual(error as? MacGamerError, .invalidDesktopSize("100x100"))
+        }
+        XCTAssertThrowsError(try VirtualDesktop.parse("0x1080")) { error in
+            XCTAssertEqual(error as? MacGamerError, .invalidDesktopSize("0x1080"))
+        }
+        let (paths, bottle, _) = try seededSteamBottle()
+        XCTAssertThrowsError(
+            try LaunchPlanner(paths: paths).planSteamLaunch(
+                appId: 570,
+                bottleId: bottle.id,
+                desktop: .enabled(VirtualDesktop(width: 100, height: 1080))
+            )
+        ) { error in
+            XCTAssertEqual(error as? MacGamerError, .invalidDesktopSize("100x1080"))
+        }
+    }
+
+    func testUpsertPreservesLaunchSettings() throws {
+        let paths = temporaryPaths()
+        try paths.ensureLayout()
+        let store = LibraryStore(paths: paths)
+        try store.upsert(GameEntry(
+            name: "Dota 2",
+            bottleId: "bottle",
+            source: .steam,
+            steamAppId: 570,
+            backend: .dxvk,
+            hud: true,
+            virtualDesktop: VirtualDesktop(width: 1920, height: 1080)
+        ))
+        try store.upsert(GameEntry(
+            name: "Dota 2",
+            bottleId: "bottle",
+            source: .steam,
+            steamAppId: 570,
+            installState: .ready
+        ))
+        let loaded = try store.game(steamAppId: 570)
+        XCTAssertEqual(loaded.backend, .dxvk)
+        XCTAssertTrue(loaded.hud)
+        XCTAssertEqual(loaded.virtualDesktop, VirtualDesktop(width: 1920, height: 1080))
+
+        let updated = try store.updateLaunchSettings(
+            id: loaded.id,
+            backend: .dxmt,
+            hud: false,
+            resetDesktop: true
+        )
+        XCTAssertEqual(updated.backend, .dxmt)
+        XCTAssertFalse(updated.hud)
+        XCTAssertNil(updated.virtualDesktop)
+    }
+
+    func testSteamSyncKeepsLaunchSettings() throws {
+        let paths = temporaryPaths()
+        try paths.ensureLayout()
+        try seedRuntime(paths: paths)
+        let bottleStore = BottleStore(paths: paths, runtimeStore: RuntimeStore(paths: paths))
+        var bottle = try bottleStore.create(name: "Steam", role: .steam, runWineboot: false)
+        try makePrefixHealthy(paths: paths, bottleId: bottle.id)
+        let steamRoot = paths.root.appendingPathComponent("fake-steam", isDirectory: true)
+        let steamapps = steamRoot.appendingPathComponent("steamapps", isDirectory: true)
+        try FileManager.default.createDirectory(at: steamapps, withIntermediateDirectories: true)
+        let steamExe = steamRoot.appendingPathComponent("steam.exe")
+        FileManager.default.createFile(atPath: steamExe.path, contents: Data())
+        try bottleStore.setSteamPath(id: bottle.id, path: steamExe.path)
+        bottle = try bottleStore.load(id: bottle.id)
+        try FileManager.default.copyItem(
+            at: try fixtureURL("appmanifest_570.acf"),
+            to: steamapps.appendingPathComponent("appmanifest_570.acf")
+        )
+
+        let steam = SteamLibrary(paths: paths)
+        let first = try steam.sync(bottleId: bottle.id)
+        let game = try XCTUnwrap(first.first(where: { $0.steamAppId == 570 }))
+        let store = LibraryStore(paths: paths)
+        _ = try store.updateLaunchSettings(
+            id: game.id,
+            backend: .dxvk,
+            hud: true,
+            virtualDesktop: VirtualDesktop(width: 1600, height: 900)
+        )
+        let after = try steam.sync(bottleId: bottle.id)
+        let kept = try XCTUnwrap(after.first(where: { $0.steamAppId == 570 }))
+        XCTAssertEqual(kept.backend, .dxvk)
+        XCTAssertTrue(kept.hud)
+        XCTAssertEqual(kept.virtualDesktop, VirtualDesktop(width: 1600, height: 900))
+    }
+
+    func testLegacyLibraryJSONDecodesWithoutDesktop() throws {
+        let json = """
+        {"id":"g1","name":"Dota 2","bottleId":"b1","source":"steam","steamAppId":570,"installState":"ready","hud":true}
+        """
+        let game = try JSONDecoder().decode(GameEntry.self, from: Data(json.utf8))
+        XCTAssertNil(game.virtualDesktop)
+        XCTAssertNil(game.backend)
+        XCTAssertTrue(game.hud)
+        XCTAssertEqual(game.arguments, [])
+        XCTAssertEqual(game.env, [:])
     }
 
     func testBackendSwitchChangesEnvironment() throws {
@@ -191,6 +340,19 @@ final class LauncherCoreTests: XCTestCase {
         )
         XCTAssertTrue(command.arguments.contains(installer.path))
         XCTAssertTrue(command.arguments.contains("/quiet"))
+    }
+
+    private func seededSteamBottle() throws -> (AppPaths, BottleConfig, URL) {
+        let paths = temporaryPaths()
+        try paths.ensureLayout()
+        try seedRuntime(paths: paths)
+        let bottleStore = BottleStore(paths: paths, runtimeStore: RuntimeStore(paths: paths))
+        let bottle = try bottleStore.create(name: "Steam", role: .steam, backend: .dxmt, runWineboot: false)
+        try makePrefixHealthy(paths: paths, bottleId: bottle.id)
+        let steamExe = paths.root.appendingPathComponent("steam.exe")
+        FileManager.default.createFile(atPath: steamExe.path, contents: Data())
+        try bottleStore.setSteamPath(id: bottle.id, path: steamExe.path)
+        return (paths, try bottleStore.load(id: bottle.id), steamExe)
     }
 
     private func temporaryPaths() -> AppPaths {

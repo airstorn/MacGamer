@@ -31,6 +31,8 @@ struct MacGamerCLI {
             try steamCommand(rest, paths: paths)
         case "run":
             try runCommand(rest, paths: paths)
+        case "game":
+            try gameCommand(rest, paths: paths)
         case "backend":
             try backendCommand(rest, paths: paths)
         case "deps":
@@ -49,14 +51,15 @@ struct MacGamerCLI {
     static func usage() -> String {
         """
         macgamer doctor
-        macgamer runtime install [--archive <winecx.tar.xz>]
+        macgamer runtime install [--archive <winecx.tar.xz>] [--force]
         macgamer bottle create --name <name> [--role steam|generic]
         macgamer bottle list
         macgamer steam use <path-to-steam.exe|SteamSetup.exe>
         macgamer steam open [--dry-run]
         macgamer steam sync
-        macgamer run --exe <path> --bottle <id> [--backend dxmt|dxvk|d3dmetal|wined3d] [--dry-run]
-        macgamer run --app <steamAppId> [--dry-run]
+        macgamer game set --app <id> [--backend dxmt|dxvk|d3dmetal|wined3d|bottle] [--hud on|off] [--desktop 1920x1080|off]
+        macgamer run --exe <path> --bottle <id> [--backend dxmt|dxvk|d3dmetal|wined3d] [--hud|--no-hud] [--desktop 1920x1080|off] [--dry-run]
+        macgamer run --app <steamAppId> [--backend dxmt|dxvk|d3dmetal|wined3d|bottle] [--hud|--no-hud] [--desktop 1920x1080|off] [--dry-run]
         macgamer backend set --bottle <id> --backend <name>
         macgamer deps vcrun2022 --bottle <id> [--installer <path>] [--dry-run]
         macgamer gptk import <dmg-or-lib-root>
@@ -66,11 +69,12 @@ struct MacGamerCLI {
 
     static func runtimeCommand(_ args: [String], paths: AppPaths) async throws {
         guard args.first == "install" else {
-            throw MacGamerError.io("использование: macgamer runtime install [--archive <winecx.tar.xz>]")
+            throw MacGamerError.io("использование: macgamer runtime install [--archive <winecx.tar.xz>] [--force]")
         }
         let archive = value(for: "--archive", in: args).map { URL(fileURLWithPath: $0) }
+        let force = args.contains("--force")
         let store = RuntimeStore(paths: paths)
-        try await store.install(wineArchive: archive) { print($0) }
+        try await store.install(wineArchive: archive, force: force) { print($0) }
     }
 
     static func bottleCommand(_ args: [String], paths: AppPaths) throws {
@@ -129,11 +133,82 @@ struct MacGamerCLI {
         }
     }
 
+    static func gameCommand(_ args: [String], paths: AppPaths) throws {
+        guard args.first == "set",
+              let app = value(for: "--app", in: args),
+              let appId = Int(app) else {
+            throw MacGamerError.io(
+                "использование: macgamer game set --app <id> [--backend dxmt|dxvk|d3dmetal|wined3d|bottle] [--hud on|off] [--desktop 1920x1080|off]"
+            )
+        }
+        let store = LibraryStore(paths: paths)
+        let existing = try store.game(steamAppId: appId)
+        var resetBackend = false
+        var backend: GraphicsBackend?
+        if let raw = value(for: "--backend", in: args) {
+            if raw == "bottle" {
+                resetBackend = true
+            } else if let parsed = GraphicsBackend(rawValue: raw) {
+                backend = parsed
+            } else {
+                throw MacGamerError.io("неизвестный бэкенд: \(raw)")
+            }
+        }
+        var hud: Bool?
+        if let raw = value(for: "--hud", in: args) {
+            switch raw {
+            case "on":
+                hud = true
+            case "off":
+                hud = false
+            default:
+                throw MacGamerError.io("использование: --hud on|off")
+            }
+        }
+        var desktop: VirtualDesktop?
+        var resetDesktop = false
+        if let raw = value(for: "--desktop", in: args) {
+            switch try DesktopOverride.parse(raw) {
+            case .disabled:
+                resetDesktop = true
+            case .enabled(let value):
+                desktop = value
+            case .inherit:
+                break
+            }
+        }
+        let updated = try store.updateLaunchSettings(
+            id: existing.id,
+            backend: backend,
+            resetBackend: resetBackend,
+            hud: hud,
+            virtualDesktop: desktop,
+            resetDesktop: resetDesktop
+        )
+        let backendText = updated.backend?.rawValue ?? "bottle"
+        let hudText = updated.hud ? "on" : "off"
+        let desktopText = updated.virtualDesktop?.spec ?? "off"
+        print("app=\(appId) backend=\(backendText) hud=\(hudText) desktop=\(desktopText)")
+    }
+
     static func runCommand(_ args: [String], paths: AppPaths) throws {
         let planner = LaunchPlanner(paths: paths)
+        let hud = hudOverride(in: args)
+        let desktop = try desktopOverride(in: args)
         let command: LaunchCommand
         if let app = value(for: "--app", in: args), let appId = Int(app) {
-            command = try planner.planSteamLaunch(appId: appId, hud: args.contains("--hud"))
+            let backendFlag = value(for: "--backend", in: args)
+            let useBottleBackend = backendFlag == "bottle"
+            if let backendFlag, !useBottleBackend, GraphicsBackend(rawValue: backendFlag) == nil {
+                throw MacGamerError.io("неизвестный бэкенд: \(backendFlag)")
+            }
+            command = try planner.planSteamLaunch(
+                appId: appId,
+                backend: backendFlag.flatMap(GraphicsBackend.init(rawValue:)),
+                useBottleBackend: useBottleBackend,
+                hud: hud,
+                desktop: desktop
+            )
         } else if let exe = value(for: "--exe", in: args) {
             guard let bottleId = value(for: "--bottle", in: args) else {
                 throw MacGamerError.io("для --exe нужен --bottle")
@@ -143,7 +218,8 @@ struct MacGamerCLI {
                 bottleId: bottleId,
                 exe: exe,
                 backend: backend,
-                hud: args.contains("--hud")
+                hud: hud,
+                desktop: desktop
             )
         } else {
             throw MacGamerError.io("использование: macgamer run --exe|--app ...")
@@ -227,5 +303,22 @@ struct MacGamerCLI {
         let next = args.index(after: index)
         guard next < args.endIndex else { return nil }
         return args[next]
+    }
+
+    static func hudOverride(in args: [String]) -> Bool? {
+        if args.contains("--no-hud") {
+            return false
+        }
+        if args.contains("--hud") {
+            return true
+        }
+        return nil
+    }
+
+    static func desktopOverride(in args: [String]) throws -> DesktopOverride {
+        guard let spec = value(for: "--desktop", in: args) else {
+            return .inherit
+        }
+        return try DesktopOverride.parse(spec)
     }
 }
