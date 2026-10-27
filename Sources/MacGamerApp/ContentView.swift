@@ -1,3 +1,4 @@
+import AppKit
 import LauncherCore
 import SwiftUI
 
@@ -104,6 +105,7 @@ struct ContentView: View {
 
     private func gameRow(_ game: GameEntry) -> some View {
         HStack(alignment: .center, spacing: 10) {
+            GameIconView(game: game)
             Image(systemName: game.installState.symbol)
                 .foregroundStyle(gameStatusColor(game.installState))
                 .frame(width: 16, height: 16)
@@ -185,6 +187,48 @@ struct ContentView: View {
         case .missing:
             return .red
         }
+    }
+}
+
+private struct GameIconView: View {
+    @EnvironmentObject private var model: AppModel
+    let game: GameEntry
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.quaternary)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: "gamecontroller.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: iconSize.width, height: iconSize.height)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityHidden(true)
+        .task(id: iconTaskID) {
+            image = await model.icon(for: game)
+        }
+    }
+
+    private var showsPortrait: Bool {
+        guard let image else { return false }
+        return image.size.height > image.size.width * 1.15
+    }
+
+    private var iconSize: CGSize {
+        showsPortrait ? CGSize(width: 36, height: 54) : CGSize(width: 40, height: 40)
+    }
+
+    private var iconTaskID: String {
+        "\(game.steamAppId ?? 0)-\(model.iconEpoch)"
     }
 }
 

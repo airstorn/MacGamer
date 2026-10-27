@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ImageIO
 import LauncherCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -18,8 +19,12 @@ final class AppModel: ObservableObject {
     @Published var serviceStatuses: [ServiceStatus] = []
     @Published var isBusy = false
     @Published var progressText = ""
+    @Published var iconEpoch = 0
 
     let paths = AppPaths()
+    private var iconImages: [Int: NSImage] = [:]
+    private var iconMisses = Set<Int>()
+    private var iconTasks: [Int: Task<Data?, Never>] = [:]
     private let libraryStore: LibraryStore
     private let bottleStore: BottleStore
     private let steamLibrary: SteamLibrary
@@ -136,12 +141,49 @@ final class AppModel: ObservableObject {
     func syncSteam() {
         do {
             games = try steamLibrary.sync()
+            iconImages.removeAll()
+            iconMisses.removeAll()
+            iconEpoch += 1
             status = "Библиотека обновлена: \(games.count)"
             errorText = ""
             refresh()
         } catch {
             errorText = Diagnostics.explain(error)
         }
+    }
+
+    func icon(for game: GameEntry) async -> NSImage? {
+        guard let appId = game.steamAppId else {
+            return nil
+        }
+        if let image = iconImages[appId] {
+            return image
+        }
+        if iconMisses.contains(appId) {
+            return nil
+        }
+        let data: Data?
+        if let inflight = iconTasks[appId] {
+            data = await inflight.value
+        } else {
+            let roots = steamRoots(for: game)
+            let paths = self.paths
+            let task = Task.detached {
+                await GameIcons.load(appId: appId, steamRoots: roots, paths: paths)
+            }
+            iconTasks[appId] = task
+            data = await task.value
+            iconTasks[appId] = nil
+        }
+        guard let data, let image = thumbnail(from: data) else {
+            if iconImages[appId] == nil {
+                iconMisses.insert(appId)
+            }
+            return iconImages[appId]
+        }
+        iconImages[appId] = image
+        iconMisses.remove(appId)
+        return image
     }
 
     func play(_ game: GameEntry) {
@@ -263,6 +305,34 @@ final class AppModel: ObservableObject {
             return
         }
         selectedLogSummary = (try? Diagnostics.summarizeLog(at: latest.path)) ?? "Не удалось прочитать лог"
+    }
+
+    private func steamRoots(for game: GameEntry) -> [URL] {
+        let bottle = bottles.first(where: { $0.id == game.bottleId })
+            ?? bottles.first(where: { $0.role == .steam })
+        guard let bottle else {
+            return []
+        }
+        return GameIcons.clientRoots(bottle: bottle, paths: paths)
+    }
+
+    private func thumbnail(from data: Data) -> NSImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        if let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) {
+            let options = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 160
+            ] as CFDictionary
+            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options) {
+                let size = NSSize(width: cgImage.width, height: cgImage.height)
+                return NSImage(cgImage: cgImage, size: size)
+            }
+        }
+        guard let image = NSImage(data: data), image.size.width > 0, image.size.height > 0 else {
+            return nil
+        }
+        return image
     }
 
     private func startWatching() {

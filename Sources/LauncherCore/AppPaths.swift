@@ -15,6 +15,7 @@ public struct AppPaths: Sendable {
     public var runtimes: URL { root.appendingPathComponent("runtimes", isDirectory: true) }
     public var bottles: URL { root.appendingPathComponent("bottles", isDirectory: true) }
     public var logs: URL { root.appendingPathComponent("logs", isDirectory: true) }
+    public var icons: URL { root.appendingPathComponent("icons", isDirectory: true) }
     public var libraryFile: URL { root.appendingPathComponent("library.json") }
     public var downloads: URL { root.appendingPathComponent("downloads", isDirectory: true) }
     public var gptkStore: URL { root.appendingPathComponent("store/d3dmetal", isDirectory: true) }
@@ -41,7 +42,7 @@ public struct AppPaths: Sendable {
 
     public func ensureLayout() throws {
         let fm = FileManager.default
-        for url in [root, runtimes, bottles, logs, downloads, gptkStore] {
+        for url in [root, runtimes, bottles, logs, icons, downloads, gptkStore] {
             try fm.createDirectory(at: url, withIntermediateDirectories: true)
         }
     }

@@ -315,6 +315,118 @@ final class LauncherCoreTests: XCTestCase {
         XCTAssertEqual(kept.virtualDesktop, VirtualDesktop(width: 1600, height: 900))
     }
 
+    func testGameIconPrefersClientIcon() throws {
+        let root = try makeIconRoot()
+        let folder = libraryCacheFolder(root: root, appId: 570)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("header".utf8).write(to: folder.appendingPathComponent("header.jpg"))
+        try Data("icon".utf8).write(to: folder.appendingPathComponent("icon.jpg"))
+        let found = GameIcons.existingLocal(appId: 570, steamRoots: [root])
+        XCTAssertEqual(found?.lastPathComponent, "icon.jpg")
+    }
+
+    func testGameIconUsesPortraitAndSkipsHero() throws {
+        let root = try makeIconRoot()
+        let folder = libraryCacheFolder(root: root, appId: 570)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("hero".utf8).write(to: folder.appendingPathComponent("library_hero.jpg"))
+        try Data("portrait".utf8).write(to: folder.appendingPathComponent("library_600x900.jpg"))
+        let found = GameIcons.existingLocal(appId: 570, steamRoots: [root])
+        XCTAssertEqual(found?.lastPathComponent, "library_600x900.jpg")
+    }
+
+    func testGameIconReadsFlatCacheAndGrid() throws {
+        let root = try makeIconRoot()
+        let libraryCache = root
+            .appendingPathComponent("appcache", isDirectory: true)
+            .appendingPathComponent("librarycache", isDirectory: true)
+        try FileManager.default.createDirectory(at: libraryCache, withIntermediateDirectories: true)
+        let flat = libraryCache.appendingPathComponent("570_icon.jpg")
+        try Data("flat".utf8).write(to: flat)
+        XCTAssertEqual(GameIcons.existingLocal(appId: 570, steamRoots: [root])?.lastPathComponent, "570_icon.jpg")
+
+        let grid = root
+            .appendingPathComponent("userdata", isDirectory: true)
+            .appendingPathComponent("1000", isDirectory: true)
+            .appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent("grid", isDirectory: true)
+        try FileManager.default.createDirectory(at: grid, withIntermediateDirectories: true)
+        try Data("other".utf8).write(to: grid.appendingPathComponent("5700_icon.png"))
+        try Data("portrait".utf8).write(to: grid.appendingPathComponent("440p.jpg"))
+        try Data("icon".utf8).write(to: grid.appendingPathComponent("440_icon.png"))
+        XCTAssertEqual(GameIcons.existingLocal(appId: 440, steamRoots: [root])?.lastPathComponent, "440_icon.png")
+        XCTAssertEqual(GameIcons.existingLocal(appId: 5700, steamRoots: [root])?.lastPathComponent, "5700_icon.png")
+    }
+
+    func testGameIconPrefersSquareClientIconOverLogo() throws {
+        let root = try makeIconRoot()
+        let folder = libraryCacheFolder(root: root, appId: 570)
+        let nested = folder.appendingPathComponent("6cddc26cb124bd87d3fbacd58cd83ba33e4cb0e7", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try png(width: 640, height: 137).write(to: folder.appendingPathComponent("logo.png"))
+        try png(width: 460, height: 215).write(to: nested.appendingPathComponent("library_header.jpg"))
+        try png(width: 300, height: 450).write(to: nested.appendingPathComponent("library_capsule.jpg"))
+        try png(width: 1000, height: 1000).write(to: folder.appendingPathComponent("be5f649217d4c7f6fc031b237e37124928d3063f.jpg"))
+        let client = folder.appendingPathComponent("48eb825bb93787945065b460bdc109e395384ebf.jpg")
+        try jpeg(width: 32, height: 32).write(to: client)
+        XCTAssertEqual(
+            GameIcons.existingLocal(appId: 570, steamRoots: [root])?.standardizedFileURL.path,
+            client.standardizedFileURL.path
+        )
+    }
+
+    func testGameIconLoadSkipsBrokenFile() async throws {
+        let paths = temporaryPaths()
+        let root = try makeIconRoot()
+        let folder = libraryCacheFolder(root: root, appId: 570)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data(repeating: 0x11, count: 48).write(to: folder.appendingPathComponent("icon.jpg"))
+        try png(width: 640, height: 137).write(to: folder.appendingPathComponent("logo.png"))
+        try png(width: 460, height: 215).write(to: folder.appendingPathComponent("header.jpg"))
+        let client = jpeg(width: 32, height: 32)
+        try client.write(to: folder.appendingPathComponent("48eb825bb93787945065b460bdc109e395384ebf.jpg"))
+        let loaded = await GameIcons.load(appId: 570, steamRoots: [root], paths: paths)
+        XCTAssertEqual(loaded, client)
+    }
+
+    func testGameIconCacheReplacesPreviousFile() throws {
+        let paths = temporaryPaths()
+        let cache = GameIconCache(paths: paths)
+        let png = samplePNG()
+        let saved = try cache.save(png, appId: 570)
+        XCTAssertEqual(saved.pathExtension, "png")
+        XCTAssertEqual(try Data(contentsOf: saved), png)
+        var jpeg = Data([0xFF, 0xD8, 0xFF, 0xE1])
+        jpeg.append(Data(repeating: 0x22, count: 40))
+        let replaced = try cache.save(jpeg, appId: 570)
+        XCTAssertEqual(replaced.pathExtension, "jpg")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.icons.appendingPathComponent("570.png").path))
+        XCTAssertThrowsError(try cache.save(Data(repeating: 0x01, count: 40), appId: 570)) { error in
+            XCTAssertEqual(error as? MacGamerError, .io("Некорректные данные иконки"))
+        }
+    }
+
+    func testRemoteIconURLUsesAppID() throws {
+        let urls = GameIcons.remoteURLs(appId: 570)
+        XCTAssertEqual(
+            urls.first?.absoluteString,
+            "https://cdn.cloudflare.steamstatic.com/steam/apps/570/library_600x900.jpg"
+        )
+        XCTAssertEqual(urls.count, 2)
+        XCTAssertFalse(urls.contains { $0.absoluteString.contains("header") || $0.absoluteString.contains("logo") })
+        let paths = temporaryPaths()
+        let bottle = BottleConfig(
+            id: "b1",
+            name: "Steam",
+            role: .steam,
+            steamExePath: "/Games/Steam/steam.exe"
+        )
+        let roots = GameIcons.clientRoots(bottle: bottle, paths: paths)
+        XCTAssertEqual(roots.first?.lastPathComponent, "Steam")
+        XCTAssertTrue(roots.contains { $0.path.contains("Program Files (x86)/Steam") })
+        XCTAssertFalse(GameIcons.isImageData(Data("<html>this is not an image file</html>".utf8)))
+    }
+
     func testLegacyLibraryJSONDecodesWithoutDesktop() throws {
         let json = """
         {"id":"g1","name":"Dota 2","bottleId":"b1","source":"steam","steamAppId":570,"installState":"ready","hud":true}
@@ -405,6 +517,55 @@ final class LauncherCoreTests: XCTestCase {
         )
         XCTAssertTrue(command.arguments.contains(installer.path))
         XCTAssertTrue(command.arguments.contains("/quiet"))
+    }
+
+    private func makeIconRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macgamer-icons-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func libraryCacheFolder(root: URL, appId: Int) -> URL {
+        root
+            .appendingPathComponent("appcache", isDirectory: true)
+            .appendingPathComponent("librarycache", isDirectory: true)
+            .appendingPathComponent(String(appId), isDirectory: true)
+    }
+
+    private func jpeg(width: Int, height: Int) -> Data {
+        var data = Data([0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 0x08])
+        data.append(UInt8((height >> 8) & 0xFF))
+        data.append(UInt8(height & 0xFF))
+        data.append(UInt8((width >> 8) & 0xFF))
+        data.append(UInt8(width & 0xFF))
+        data.append(contentsOf: [0x01, 0x01, 0x11, 0x00, 0xFF, 0xD9])
+        if data.count < 32 {
+            data.append(Data(count: 32 - data.count))
+        }
+        return data
+    }
+
+    private func png(width: Int, height: Int, fill: UInt8 = 0xAB) -> Data {
+        var data = Data([
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52
+        ])
+        for value in [width, height] {
+            data.append(UInt8((value >> 24) & 0xFF))
+            data.append(UInt8((value >> 16) & 0xFF))
+            data.append(UInt8((value >> 8) & 0xFF))
+            data.append(UInt8(value & 0xFF))
+        }
+        data.append(contentsOf: [0x08, 0x02, 0x00, 0x00, 0x00])
+        data.append(Data(repeating: fill, count: 24))
+        return data
+    }
+
+    private func samplePNG() -> Data {
+        var data = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        data.append(Data(repeating: 0xAB, count: 40))
+        return data
     }
 
     private func seededSteamBottle() throws -> (AppPaths, BottleConfig, URL) {
